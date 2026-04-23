@@ -15,6 +15,8 @@
 
 using namespace std;
 
+// Each key stores its value plus an optional expiry timestamp (in ms).
+// expiry = -1 means the key does not expire.
 struct Value{
     string data;
     long long expiry;
@@ -22,17 +24,21 @@ struct Value{
 };
 
 
+// Returns current monotonic time in milliseconds.
+// steady_clock is used so TTL checks are not affected by system time changes.
 long long now_ms() {
     return chrono::duration_cast<chrono::milliseconds>(
         chrono::steady_clock::now().time_since_epoch()
     ).count();
 }
 
+// Shared in-memory key/value store guarded by a mutex for thread safety.
 unordered_map<string, Value> store;
 mutex store_mutex;
 
 class RespParser {
 private:
+    // Accumulates raw bytes from socket reads until full RESP frames are available.
     string buffer;
 
 public:
@@ -44,6 +50,7 @@ public:
     bool parse(vector<string>& result) {
         result.clear();
 
+        // Need at least one byte to begin parsing.
         if (buffer.empty()) return false;
 
         // Must start with '*'
@@ -56,6 +63,7 @@ public:
         int num_elements = stoi(buffer.substr(1, pos - 1));
         size_t idx = pos + 2;
 
+        // Parse each bulk string argument from the array.
         for (int i = 0; i < num_elements; i++) {
             if (idx >= buffer.size()) return false;
 
@@ -67,6 +75,7 @@ public:
             int str_len = stoi(buffer.substr(idx + 1, len_end - idx - 1));
             idx = len_end + 2;
 
+            // Wait for more data if current command frame is incomplete.
             if (idx + str_len + 2 > buffer.size()) return false;
 
             string arg = buffer.substr(idx, str_len);
@@ -84,11 +93,13 @@ public:
 
 void handle_client(int client_fd)
 {
+    // Per-client read buffer + parser state.
     char buf[1024];
     RespParser parser;
 
     while (true)
     {
+        // Read bytes from this client socket.
         int bytes_received = recv(client_fd, buf, sizeof(buf), 0);
         if (bytes_received <= 0) break;
 
@@ -96,7 +107,9 @@ void handle_client(int client_fd)
 
         vector<string> cmd;
 
-        while (parser.parse(cmd)) // handle multiple commands (pipeline)
+        // Parse and execute every complete command currently available.
+        // This supports pipelined requests in a single network read.
+        while (parser.parse(cmd))
         {
             if (cmd.empty()) continue;
 
@@ -138,7 +151,8 @@ void handle_client(int client_fd)
 
     long long expiry = -1;
 
-    // Handle PX
+    // Optional SET key value PX <milliseconds>
+    // If PX is present, compute absolute expiry deadline.
     if (cmd.size() >= 5)
     {
         string opt;
@@ -174,12 +188,13 @@ else if (command == "GET")
     bool found = false;
 
     {
+        // Lock while reading/modifying shared store.
         lock_guard<mutex> lock(store_mutex);
 
         auto it = store.find(key);
         if (it != store.end())
         {
-            // expiry check
+            // Lazy expiration: remove expired keys when accessed.
             if (it->second.expiry != -1 && now_ms() > it->second.expiry)
             {
                 store.erase(it);
@@ -211,6 +226,7 @@ else
         }
     }
 
+    // Client disconnected or socket read failed.
     close(client_fd);
 }
 
@@ -220,6 +236,7 @@ int main(int argc, char **argv) {
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
   
+    // Create a TCP socket for IPv4 connections.
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) {
    std::cerr << "Failed to create server socket\n";
@@ -228,6 +245,7 @@ int main(int argc, char **argv) {
   
   
   int reuse = 1;
+    // Allows quick restart on the same port after process restarts.
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
     std::cerr << "setsockopt failed\n";
     return 1;
@@ -238,11 +256,13 @@ int main(int argc, char **argv) {
   server_addr.sin_addr.s_addr = INADDR_ANY;
   server_addr.sin_port = htons(6379);
   
+    // Bind server socket to 0.0.0.0:6379.
   if (bind(server_fd, (struct sockaddr *) &server_addr, sizeof(server_addr)) != 0) {
     std::cerr << "Failed to bind to port 6379\n";
     return 1;
   }
   
+    // Start listening for incoming client connections.
   int connection_backlog = 5;
   if (listen(server_fd, connection_backlog) != 0) {
     std::cerr << "listen failed\n";
@@ -257,6 +277,7 @@ int main(int argc, char **argv) {
   std::cout << "Logs from your program will appear here!\n";
 
    
+    // Accept clients forever; each client is handled in a detached thread.
   while (true){
   int client_fd=accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t * )& client_addr_len);
   std:: cout<< "client connected\n";
