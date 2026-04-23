@@ -48,13 +48,34 @@ public:
 
     
     bool parse(vector<string>& result) {
-        result.clear();
+    result.clear();
 
-        // Need at least one byte to begin parsing.
-        if (buffer.empty()) return false;
+    if (buffer.empty()) return false;
 
-        // Must start with '*'
-        if (buffer[0] != '*') return false;
+    // 🔥 HANDLE INLINE PROTOCOL FIRST (for redis-benchmark)
+    if (buffer[0] != '*')
+    {
+        size_t pos = buffer.find("\r\n");
+        if (pos == string::npos) return false;
+
+        string line = buffer.substr(0, pos);
+        buffer.erase(0, pos + 2);
+
+        // split by space
+        string word;
+        for (char c : line)
+        {
+            if (c == ' ')
+            {
+                if (!word.empty()) result.push_back(word);
+                word.clear();
+            }
+            else word += c;
+        }
+        if (!word.empty()) result.push_back(word);
+
+        return true;
+    }
 
         // Find end of first line (*<num>\r\n)
         size_t pos = buffer.find("\r\n");
@@ -151,8 +172,6 @@ void handle_client(int client_fd)
 
     long long expiry = -1;
 
-    // Optional SET key value PX <milliseconds>
-    // If PX is present, compute absolute expiry deadline.
     if (cmd.size() >= 5)
     {
         string opt;
@@ -173,6 +192,18 @@ void handle_client(int client_fd)
     string response = "+OK\r\n";
     send(client_fd, response.c_str(), response.size(), 0);
 }
+
+else if (command == "CONFIG")
+{
+    // Simulate: CONFIG GET *
+    string response =
+        "*2\r\n"
+        "$9\r\nmaxmemory\r\n"
+        "$1\r\n0\r\n";
+
+    send(client_fd, response.c_str(), response.size(), 0);
+}
+
 
 else if (command == "GET")
 {
