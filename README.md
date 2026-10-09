@@ -1,4 +1,4 @@
-# Mini Redis Server (C++)
+# FlashKV (C++)
 
 A small, multi-threaded, Redis-compatible in-memory key/value server written in C++ from scratch using raw POSIX sockets. It speaks the **RESP** protocol, so it works with `redis-cli` and `redis-benchmark`.
 
